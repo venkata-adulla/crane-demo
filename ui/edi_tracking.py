@@ -10,7 +10,7 @@ from api.n8n_client import N8NClient
 
 def _unwrap_payload(payload: Any) -> Optional[Dict[str, Any]]:
     if isinstance(payload, dict):
-        if "output" in payload or "actual" in payload:
+        if "output" in payload or "actual" in payload or "boomi" in payload or "mft" in payload:
             return payload
         if "data" in payload:
             return _unwrap_payload(payload.get("data"))
@@ -18,10 +18,62 @@ def _unwrap_payload(payload: Any) -> Optional[Dict[str, Any]]:
             return payload.get("json")
         return payload
     if isinstance(payload, list):
+        merged: Dict[str, Any] = {}
+        found = False
         for item in payload:
             unwrapped = _unwrap_payload(item)
-            if unwrapped and ("output" in unwrapped or "actual" in unwrapped):
-                return unwrapped
+            if not unwrapped:
+                continue
+            if any(k in unwrapped for k in ("output", "actual", "boomi", "mft")):
+                merged.update(unwrapped)
+                found = True
+        if found:
+            return merged
+    return None
+
+
+def _maybe_parse_json(payload: Any) -> Any:
+    if isinstance(payload, str):
+        text = payload.strip()
+        if text.startswith("{") or text.startswith("["):
+            try:
+                return json.loads(text)
+            except json.JSONDecodeError:
+                return payload
+    if isinstance(payload, dict) and isinstance(payload.get("text"), str):
+        return _maybe_parse_json(payload.get("text"))
+    return payload
+
+
+def _merge_data_list(payload: Any) -> Dict[str, Any]:
+    payload = _maybe_parse_json(payload)
+    if isinstance(payload, dict) and isinstance(payload.get("data"), list):
+        items = payload.get("data")
+    elif isinstance(payload, list):
+        items = payload
+    else:
+        return {}
+
+    merged: Dict[str, Any] = {}
+    for item in items:
+        item = _maybe_parse_json(item)
+        if isinstance(item, dict):
+            merged.update(item)
+    return merged
+
+
+def _extract_key(payload: Any, key: str) -> Any:
+    payload = _maybe_parse_json(payload)
+    if isinstance(payload, dict):
+        if key in payload:
+            return payload.get(key)
+        if "data" in payload:
+            return _extract_key(payload.get("data"), key)
+    if isinstance(payload, list):
+        for item in payload:
+            found = _extract_key(item, key)
+            if found is not None:
+                return found
     return None
 
 
@@ -153,7 +205,7 @@ def _fetch_tracking(document_id: str) -> Dict[str, Any]:
 
 
 def render() -> None:
-    st.caption("Enter a Document ID to fetch AI summary + actual SQL data via n8n.")
+    st.caption("Enter a Document ID to fetch AI summary + Boomi & MFT SQL data via n8n.")
 
     with st.form("edi-tracking-form", clear_on_submit=False):
         doc_id = st.text_input(
@@ -181,9 +233,12 @@ def render() -> None:
         st.info("Submit a Document ID to view results.")
         return
 
-    unwrapped = _unwrap_payload(response) or {}
-    output = unwrapped.get("output")
-    actual = unwrapped.get("actual")
+    response_data = _maybe_parse_json(response)
+    merged = _merge_data_list(response_data)
+    unwrapped = _unwrap_payload(response_data) or {}
+    output = merged.get("output") or unwrapped.get("output") or _extract_key(response_data, "output")
+    actual = merged.get("boomi") or unwrapped.get("boomi") or _extract_key(response_data, "boomi")
+    mft = merged.get("mft") or unwrapped.get("mft") or _extract_key(response_data, "mft")
 
     st.subheader("Summary")
     if isinstance(output, str) and output.strip():
@@ -193,9 +248,13 @@ def render() -> None:
     else:
         st.write("NA")
 
-    st.subheader("Actual (SQL data)")
+    st.subheader("Boomi (SQL data)")
     rows = _normalize_actual(actual)
     _render_actual_table(rows)
+
+    st.subheader("MFT (SQL data)")
+    mft_rows = _normalize_actual(mft)
+    _render_actual_table(mft_rows)
 
     with st.expander("Raw response (n8n)", expanded=False):
         st.json(response)
