@@ -153,7 +153,12 @@ def _render_incoming_dialog(title: str, data: Any) -> None:
     _dialog()
 
 
-def _render_actual_table(rows: List[Dict[str, Any]]) -> None:
+def _render_actual_table(
+    rows: List[Dict[str, Any]],
+    *,
+    enable_popup: bool = True,
+    selection_key: Optional[str] = None,
+) -> None:
     rows = _filter_empty_rows(rows)
     if not rows:
         st.write("NA")
@@ -176,26 +181,37 @@ def _render_actual_table(rows: List[Dict[str, Any]]) -> None:
     max_height = 520
     table_height = min(max_height, header_height + row_height * len(display_rows))
 
-    event = st.dataframe(
-        display_rows,
-        use_container_width=True,
-        height=table_height,
-        hide_index=True,
-        on_select="rerun",
-        selection_mode="single-row",
-    )
+    if enable_popup:
+        event = st.dataframe(
+            display_rows,
+            use_container_width=True,
+            height=table_height,
+            hide_index=True,
+            on_select="rerun",
+            selection_mode="single-row",
+            key=selection_key,
+        )
 
-    selected_rows: List[int] = []
-    if hasattr(event, "selection"):
-        selected_rows = list(getattr(event.selection, "rows", []))
-    elif isinstance(event, dict):
-        selected_rows = list(event.get("selection", {}).get("rows", []))
+        selected_rows: List[int] = []
+        if hasattr(event, "selection"):
+            selected_rows = list(getattr(event.selection, "rows", []))
+        elif isinstance(event, dict):
+            selected_rows = list(event.get("selection", {}).get("rows", []))
 
-    if selected_rows:
-        row_idx = selected_rows[0]
-        data = incoming_lookup.get(row_idx)
-        if data is not None:
-            _render_incoming_dialog(f"Incoming Data (Row {row_idx + 1})", data)
+        if selected_rows:
+            row_idx = selected_rows[0]
+            data = incoming_lookup.get(row_idx)
+            if data is not None:
+                _render_incoming_dialog(f"Incoming Data (Row {row_idx + 1})", data)
+    else:
+        st.session_state.pop(selection_key or "mft_table", None)
+        st.dataframe(
+            display_rows,
+            use_container_width=True,
+            height=table_height,
+            hide_index=True,
+            key=selection_key,
+        )
 
 
 @st.cache_data(ttl=15, show_spinner=False)
@@ -250,11 +266,11 @@ def render() -> None:
 
     st.subheader("Boomi (SQL data)")
     rows = _normalize_actual(actual)
-    _render_actual_table(rows)
+    _render_actual_table(rows, enable_popup=True, selection_key="boomi_table")
 
     st.subheader("MFT (SQL data)")
     mft_rows = _normalize_actual(mft)
-    _render_actual_table(mft_rows)
+    _render_actual_table(mft_rows, enable_popup=False, selection_key="mft_table")
 
     with st.expander("Raw response (n8n)", expanded=False):
         st.json(response)
